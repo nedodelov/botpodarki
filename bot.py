@@ -91,8 +91,9 @@ def set_threshold(new_threshold):
 
 def get_start_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Изменить порог сообщений", callback_data="change_threshold")],
-        [InlineKeyboardButton(text="Показать настройки", callback_data="show_settings")]
+        [InlineKeyboardButton(text="Изменить порог", callback_data="change_threshold")],
+        [InlineKeyboardButton(text="Статистика", callback_data="stats")],
+        [InlineKeyboardButton(text="Настройки", callback_data="show_settings")]
     ])
 
 @dp.message(Command("start"))
@@ -100,8 +101,8 @@ async def cmd_start(message: types.Message):
     logger.info(f"Команда /start от {message.from_user.id}")
     await message.reply(
         "👋 Привет! Я бот для розыгрыша подарков.\n\n"
-        "Считаю сообщения в группе и при достижении порога отправляю поздравление с фото.\n\n"
-        "🔹 Администраторы могут изменить порог через кнопку ниже.\n"
+        "Считаю сообщения в группах и при достижении порога отправляю поздравление.\n\n"
+        "🔹 Администраторы могут управлять настройками через кнопки ниже.\n"
         "🔹 Для всех остальных – просто общайтесь и участвуйте!",
         reply_markup=get_start_keyboard()
     )
@@ -114,6 +115,23 @@ async def cb_change_threshold(callback: types.CallbackQuery, state: FSMContext):
         return
     await callback.message.reply("Введите новое количество сообщений (целое число > 0):")
     await state.set_state(SetThresholdStates.waiting_for_threshold)
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data == "stats")
+async def cb_stats(callback: types.CallbackQuery):
+    logger.info(f"Callback stats от {callback.from_user.id}")
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Нет прав.", show_alert=True)
+        return
+    count = get_count()
+    threshold = get_threshold()
+    remaining = threshold - count
+    await callback.message.reply(
+        f"📊 Текущая статистика:\n"
+        f"Сообщений собрано: {count}\n"
+        f"Порог: {threshold}\n"
+        f"Осталось до мишки: {remaining}"
+    )
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data == "show_settings")
@@ -146,26 +164,35 @@ async def process_new_threshold(message: types.Message, state: FSMContext):
 
 @dp.message()
 async def handle_message(message: types.Message, state: FSMContext):
+    # Игнорируем сообщения от самого бота
     if message.from_user.id == bot.id:
         return
+
+    # Игнорируем команды – они уже обработаны выше
     if message.text and message.text.startswith('/'):
         return
 
+    # Работаем только в группах и супергруппах
+    if message.chat.type not in ["group", "supergroup"]:
+        logger.info(f"Сообщение из лички от {message.from_user.id} – игнорируем")
+        return
+
+    # Если мы в режиме ввода порога – не считаем
     current_state = await state.get_state()
     if current_state == SetThresholdStates.waiting_for_threshold.state:
         return
 
+    # Счётчик для групп
     current = get_count() + 1
     set_count(current)
     threshold = get_threshold()
-    logger.info(f"Сообщение от {message.from_user.id}. Счётчик: {current}/{threshold}")
+    logger.info(f"Групповое сообщение от {message.from_user.id}. Счётчик: {current}/{threshold}")
 
     if current >= threshold:
         logger.info(f"Порог достигнут! Поздравляем {message.from_user.id}")
         try:
             if os.path.exists(LOCAL_PHOTO):
                 photo = FSInputFile(LOCAL_PHOTO)
-               
                 try:
                     await message.reply_photo(
                         photo=photo,
@@ -175,14 +202,12 @@ async def handle_message(message: types.Message, state: FSMContext):
                     logger.info("Фото с премиум-эмодзи отправлено.")
                 except Exception as e:
                     logger.error(f"Ошибка при отправке с HTML: {e}")
-                    
                     await message.reply_photo(
                         photo=photo,
                         caption=FIXED_MESSAGE_PLAIN
                     )
                     logger.info("Отправлен обычный текст (без премиум-эмодзи).")
             else:
-                
                 try:
                     await message.reply(FIXED_MESSAGE_HTML, parse_mode="HTML")
                 except:
@@ -212,6 +237,21 @@ async def cmd_set_threshold(message: types.Message):
         await message.reply(f"Порог изменён на {new_th}.")
     except ValueError:
         await message.reply("Введите число.")
+
+@dp.message(Command("stats"))
+async def cmd_stats(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.reply("Нет прав.")
+        return
+    count = get_count()
+    threshold = get_threshold()
+    remaining = threshold - count
+    await message.reply(
+        f"📊 Текущая статистика:\n"
+        f"Сообщений собрано: {count}\n"
+        f"Порог: {threshold}\n"
+        f"Осталось до мишки: {remaining}"
+    )
 
 @dp.message(Command("show_settings"))
 async def cmd_show_settings(message: types.Message):
